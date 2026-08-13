@@ -1,0 +1,19 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Experiment outputs
+research-one/edge_memory_demo/outputs/
+*.pt
+*.pth
+*.ckpt
+
+# Local datasets and model caches
+data/
+datasets/
+models/
+hf_cache/
+.cache/
