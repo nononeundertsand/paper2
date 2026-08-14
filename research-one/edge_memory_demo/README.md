@@ -14,6 +14,7 @@ edge_memory_demo/
 ├── run_scheduler.py
 ├── run_synthetic.py
 ├── run_llm_synthetic.py
+├── run_real_qa.py
 ├── run_threshold_sweep.py
 ├── collect_results.py
 ├── scripts/
@@ -23,6 +24,8 @@ edge_memory_demo/
 │   ├── run_llm_synthetic.bat
 │   ├── run_llm_synthetic.sh
 │   ├── run_llm_router_noise_sweep.bat
+│   ├── run_real_qa_jsonl.bat
+│   ├── run_real_qa_squad.bat
 │   ├── run_scheduler.bat
 │   ├── run_scheduler.sh
 │   ├── run_synthetic.bat
@@ -38,6 +41,7 @@ edge_memory_demo/
         ├── data.py
         ├── llm_features.py
         ├── model.py
+        ├── real_qa.py
         ├── scheduler.py
         ├── threshold_sweep.py
         └── train.py
@@ -75,7 +79,7 @@ pip download -r requirements.txt -d wheels
 pip install --no-index --find-links wheels -r requirements.txt
 ```
 
-如果只跑 toy synthetic 实验，理论上只需要 `torch`；如果跑真实 LLM hidden-state 实验，需要额外安装 `transformers`。当前 `requirements.txt` 已包含两者。
+如果只跑 toy synthetic 实验，理论上只需要 `torch`；如果跑真实 LLM hidden-state 实验，需要额外安装 `transformers`；如果跑 HuggingFace 真实 QA 数据集，需要 `datasets`。当前 `requirements.txt` 已包含这些依赖。
 
 ## 实验一：按需读取参数记忆
 
@@ -291,6 +295,84 @@ outputs/llm_synthetic/
 - 如果真实 LLM features 上仍能复现 toy 实验趋势，说明方法从合成 encoder 迁移到真实 LLM 表征是可行的。
 
 注意：该实验仍然使用合成 fact 数据，只是 encoder 换成真实 LLM。它是从 toy feasibility 到真实 QA 实验之间的中间验证。下一步才是接入 NQ、TriviaQA、HotpotQA 等真实数据集。
+
+## 实验五：真实 QA 数据验证
+
+该实验使用真实 QA 数据集的问题和答案，而不是 synthetic `entity_x -> answer_x`。当前实现仍然是分类式验证：将真实问题文本输入冻结 LLM，抽取 hidden state，再训练 base head、memory experts 和 router 去预测答案标签。它用于验证“真实问题文本分布上是否仍存在 Base 缺 tail、Dense Memory 干扰、Conditional Memory 按需补充”的模式。
+
+### 使用 HuggingFace SQuAD
+
+SQuAD 比 NQ/TriviaQA 更容易下载，建议先用它调通真实数据流程：
+
+```bat
+scripts\run_real_qa_squad.bat D:\models\Qwen2.5-0.5B-Instruct
+```
+
+等价手动命令：
+
+```bat
+python run_real_qa.py ^
+  --model-name-or-path D:\models\Qwen2.5-0.5B-Instruct ^
+  --dataset-name squad ^
+  --dataset-split train ^
+  --output-dir outputs\real_qa_squad ^
+  --device auto ^
+  --fp16 ^
+  --num-facts 120 ^
+  --base-train-size 4000 ^
+  --memory-train-size 6000 ^
+  --test-size 1200 ^
+  --base-epochs 20 ^
+  --memory-epochs 30 ^
+  --learning-rate 3e-3
+```
+
+### 使用本地 JSONL
+
+如果服务器无法下载 HuggingFace 数据集，可以准备一个 JSONL 文件，每行包含一个 QA 样本：
+
+```json
+{"question": "Who wrote Hamlet?", "answers": ["William Shakespeare"]}
+{"question": "What is the capital of France?", "answers": ["Paris"]}
+```
+
+然后运行：
+
+```bat
+scripts\run_real_qa_jsonl.bat D:\models\Qwen2.5-0.5B-Instruct D:\data\qa.jsonl
+```
+
+如果你的字段名不是 `question` / `answers`，可以手动指定：
+
+```bat
+python run_real_qa.py ^
+  --model-name-or-path D:\models\Qwen2.5-0.5B-Instruct ^
+  --local-jsonl D:\data\qa.jsonl ^
+  --question-field query ^
+  --answer-field answer ^
+  --output-dir outputs\real_qa_jsonl ^
+  --device auto ^
+  --fp16
+```
+
+输出文件：
+
+```text
+outputs\real_qa_squad\
+├── real_qa_base.pt
+├── real_qa_conditional_memory.pt
+├── real_qa_metrics.json
+└── real_qa_threshold_sweep.csv
+```
+
+重点关注：
+
+- `real_qa_base` 的 `acc_tail_fact` 是否低于 common/general；
+- `real_qa_dense_memory` 是否补 tail 但破坏 common/general；
+- `real_qa_conditional_threshold_*` 是否在较低激活率下同时保持 common 和 tail；
+- 如果真实 QA 结果不如 synthetic，优先降低 `num_facts` 或增加训练样本/epoch。
+
+注意：这一步已经使用真实 QA 文本和真实答案，但仍然是分类式验证，不是最终的生成式 QA。生成式 QA 需要进一步让 memory 输出影响 LLM 生成 token 或候选答案排序。
 
 ## 专业实验批处理脚本
 
