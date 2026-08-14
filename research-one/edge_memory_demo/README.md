@@ -399,9 +399,12 @@ outputs\real_qa_squad\
 - `real_qa_base` 的 `acc_tail_fact` 是否低于 common/general；
 - `real_qa_dense_memory` 是否补 tail 但破坏 common/general；
 - `real_qa_conditional_threshold_*` 是否在较低激活率下同时保持 common、tail 和真实 general；
+- `rank_qa_em` / `rank_qa_f1`：只在真实 QA 样本上计算候选答案排序 EM/F1；
+- `rank_qa_mrr` / `rank_qa_hits1` / `rank_qa_hits5`：正确答案在候选答案池中的排序质量；
+- `rank_common_em` / `rank_tail_em`：分别观察 common QA 和 tail QA 的候选答案排序 EM；
 - 如果真实 QA 结果不如 synthetic，优先降低 `num_facts` 或增加训练样本/epoch。
 
-注意：这一步已经使用真实 QA 文本、真实答案和真实 general 文本，但仍然是分类式验证，不是最终的生成式 QA。生成式 QA 需要进一步让 memory 输出影响 LLM 生成 token 或候选答案排序。
+注意：这一步已经使用真实 QA 文本、真实答案和真实 general 文本，并加入了候选答案排序 EM/F1。但它仍然不是最终的自由生成式 QA。生成式 QA 需要进一步让 memory 输出影响 LLM token 解码。
 
 ## 专业实验批处理脚本
 

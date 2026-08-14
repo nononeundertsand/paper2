@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import re
 import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -23,7 +24,7 @@ from edge_memory.llm_features import (
     train_memory,
 )
 from edge_memory.threshold_sweep import parse_thresholds, save_csv
-from edge_memory.train import get_device, print_metrics, set_seed
+from edge_memory.train import batch_to_device, get_device, print_metrics, set_seed
 
 
 GENERAL_TASKS = [
@@ -140,6 +141,40 @@ class RealQAWorld:
 
 def normalize_answer(answer: str) -> str:
     return " ".join(str(answer).strip().split())
+
+
+def normalize_for_eval(text: str) -> str:
+    text = str(text).lower()
+    text = re.sub(r"\b(a|an|the)\b", " ", text)
+    text = re.sub(r"[^a-z0-9\s]", " ", text)
+    return " ".join(text.split())
+
+
+def token_f1(prediction: str, gold: str) -> float:
+    pred_tokens = normalize_for_eval(prediction).split()
+    gold_tokens = normalize_for_eval(gold).split()
+    if not pred_tokens and not gold_tokens:
+        return 1.0
+    if not pred_tokens or not gold_tokens:
+        return 0.0
+    common = {}
+    for token in pred_tokens:
+        common[token] = common.get(token, 0) + 1
+    overlap = 0
+    for token in gold_tokens:
+        count = common.get(token, 0)
+        if count > 0:
+            overlap += 1
+            common[token] = count - 1
+    if overlap == 0:
+        return 0.0
+    precision = overlap / len(pred_tokens)
+    recall = overlap / len(gold_tokens)
+    return 2 * precision * recall / (precision + recall)
+
+
+def exact_match(prediction: str, gold: str) -> float:
+    return float(normalize_for_eval(prediction) == normalize_for_eval(gold))
 
 
 def extract_answer(raw_answer) -> Optional[str]:
@@ -369,6 +404,84 @@ def build_samples(world: RealQAWorld, split: str, size: int, seed: int) -> RawTe
     return RawTextDataset(samples)
 
 
+@torch.no_grad()
+def evaluate_candidate_answer_ranking(
+    loader,
+    device: torch.device,
+    world: RealQAWorld,
+    predict_logits,
+) -> Dict[str, float]:
+    answer_texts = world.labels[: world.num_fact_labels]
+    totals = {
+        "qa": {"n": 0, "em": 0.0, "f1": 0.0, "mrr": 0.0, "hits1": 0.0, "hits5": 0.0},
+        "common": {"n": 0, "em": 0.0, "f1": 0.0},
+        "tail": {"n": 0, "em": 0.0, "f1": 0.0},
+    }
+
+    for batch in loader:
+        batch = batch_to_device(batch, device)
+        logits = predict_logits(batch)[:, : world.num_fact_labels]
+        labels = batch["labels"]
+        sample_types = batch["sample_types"]
+        qa_mask = (sample_types == SAMPLE_COMMON_FACT) | (sample_types == SAMPLE_TAIL_FACT)
+        if qa_mask.sum().item() == 0:
+            continue
+
+        qa_logits = logits[qa_mask]
+        qa_labels = labels[qa_mask]
+        qa_types = sample_types[qa_mask]
+        ranked = torch.argsort(qa_logits, dim=-1, descending=True)
+        top1 = ranked[:, 0]
+
+        for row in range(qa_labels.numel()):
+            pred_id = int(top1[row].item())
+            gold_id = int(qa_labels[row].item())
+            pred_answer = answer_texts[pred_id]
+            gold_answer = answer_texts[gold_id]
+            em = exact_match(pred_answer, gold_answer)
+            f1 = token_f1(pred_answer, gold_answer)
+
+            matches = torch.nonzero(ranked[row] == gold_id, as_tuple=False)
+            rank = int(matches[0].item()) + 1 if matches.numel() > 0 else world.num_fact_labels + 1
+            totals["qa"]["n"] += 1
+            totals["qa"]["em"] += em
+            totals["qa"]["f1"] += f1
+            totals["qa"]["mrr"] += 1.0 / rank
+            totals["qa"]["hits1"] += float(rank <= 1)
+            totals["qa"]["hits5"] += float(rank <= 5)
+
+            bucket = "tail" if int(qa_types[row].item()) == SAMPLE_TAIL_FACT else "common"
+            totals[bucket]["n"] += 1
+            totals[bucket]["em"] += em
+            totals[bucket]["f1"] += f1
+
+    qa_n = max(totals["qa"]["n"], 1)
+    common_n = max(totals["common"]["n"], 1)
+    tail_n = max(totals["tail"]["n"], 1)
+    return {
+        "rank_qa_em": totals["qa"]["em"] / qa_n,
+        "rank_qa_f1": totals["qa"]["f1"] / qa_n,
+        "rank_qa_mrr": totals["qa"]["mrr"] / qa_n,
+        "rank_qa_hits1": totals["qa"]["hits1"] / qa_n,
+        "rank_qa_hits5": totals["qa"]["hits5"] / qa_n,
+        "rank_common_em": totals["common"]["em"] / common_n,
+        "rank_common_f1": totals["common"]["f1"] / common_n,
+        "rank_tail_em": totals["tail"]["em"] / tail_n,
+        "rank_tail_f1": totals["tail"]["f1"] / tail_n,
+    }
+
+
+def add_ranking_metrics(
+    metrics: Dict[str, float],
+    loader,
+    device: torch.device,
+    world: RealQAWorld,
+    predict_logits,
+) -> Dict[str, float]:
+    metrics.update(evaluate_candidate_answer_ranking(loader, device, world, predict_logits))
+    return metrics
+
+
 def run(cfg: RealQAConfig) -> Dict[str, object]:
     AutoModelForCausalLM, AutoTokenizer = load_transformers()
     set_seed(cfg.seed)
@@ -421,6 +534,13 @@ def run(cfg: RealQAConfig) -> Dict[str, object]:
     base = FeatureBaseClassifier(hidden_size, world.num_labels).to(device)
     train_base(base, base_loader, cfg, device)
     base_metrics = evaluate_base(base, test_loader, device)
+    add_ranking_metrics(
+        base_metrics,
+        test_loader,
+        device,
+        world,
+        lambda batch: base(batch["features"])["logits"],
+    )
     print_metrics("real_qa_base", base_metrics)
 
     memory_model = FeatureConditionalMemoryModel(
@@ -432,6 +552,13 @@ def run(cfg: RealQAConfig) -> Dict[str, object]:
     ).to(device)
     train_memory(memory_model, memory_loader, cfg, device)
     dense_metrics = evaluate_memory(memory_model, test_loader, device, 0.5, mode="dense")
+    add_ranking_metrics(
+        dense_metrics,
+        test_loader,
+        device,
+        world,
+        lambda batch: memory_model(batch["features"], threshold=0.5, force_read=True, soft_read=False)["final_logits"],
+    )
     print_metrics("real_qa_dense_memory", dense_metrics)
 
     thresholds = parse_thresholds(cfg.thresholds)
@@ -439,6 +566,18 @@ def run(cfg: RealQAConfig) -> Dict[str, object]:
     threshold_metrics: Dict[str, Dict[str, float]] = {}
     for threshold in thresholds:
         metrics = evaluate_memory(memory_model, test_loader, device, threshold, mode="conditional")
+        add_ranking_metrics(
+            metrics,
+            test_loader,
+            device,
+            world,
+            lambda batch, threshold=threshold: memory_model(
+                batch["features"],
+                threshold=threshold,
+                force_read=None,
+                soft_read=False,
+            )["final_logits"],
+        )
         row = {"threshold": threshold}
         row.update(metrics)
         rows.append(row)
