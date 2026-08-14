@@ -208,6 +208,7 @@ class SyntheticMemoryDataset(Dataset):
 
         return {
             "input_ids": torch.tensor(self.world.vocab.encode(tokens), dtype=torch.long),
+            "text": " ".join(tokens),
             "label": torch.tensor(label, dtype=torch.long),
             "read_label": torch.tensor(read_label, dtype=torch.float32),
             "sample_type": torch.tensor(kind, dtype=torch.long),
@@ -237,4 +238,3 @@ def collate_batch(samples: List[dict], pad_id: int) -> dict:
         "read_labels": torch.stack([sample["read_label"] for sample in samples]),
         "sample_types": torch.stack([sample["sample_type"] for sample in samples]),
     }
-

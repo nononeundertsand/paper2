@@ -13,8 +13,11 @@ edge_memory_demo/
 ├── requirements.txt
 ├── run_scheduler.py
 ├── run_synthetic.py
+├── run_llm_synthetic.py
 ├── run_threshold_sweep.py
 ├── scripts/
+│   ├── run_llm_synthetic.bat
+│   ├── run_llm_synthetic.sh
 │   ├── run_scheduler.bat
 │   ├── run_scheduler.sh
 │   ├── run_synthetic.bat
@@ -64,6 +67,8 @@ pip download -r requirements.txt -d wheels
 ```bat
 pip install --no-index --find-links wheels -r requirements.txt
 ```
+
+如果只跑 toy synthetic 实验，理论上只需要 `torch`；如果跑真实 LLM hidden-state 实验，需要额外安装 `transformers`。当前 `requirements.txt` 已包含两者。
 
 ## 实验一：按需读取参数记忆
 
@@ -226,6 +231,59 @@ outputs/threshold_sweep/
 - `threshold` 越高，`activation_rate` 通常越低，但可能漏掉需要 memory 的 tail facts；
 - 如果在较宽 threshold 范围内 `accuracy` 和 `acc_tail_fact` 都稳定，说明 router 的可分性较好；
 - 如果高 threshold 下 `router_recall` 降低，说明过于保守，会漏读 memory。
+
+## 实验四：真实 LLM Hidden-State 验证
+
+前面三个实验是合成 toy 验证，encoder 是轻量 Bag-of-Words。为了进一步验证方法能否迁移到真实 LLM 表征，可以运行真实 LLM hidden-state 实验。该实验会：
+
+1. 加载一个 HuggingFace CausalLM，例如 Qwen2.5-0.5B-Instruct。
+2. 冻结 LLM，不更新任何 LLM 参数。
+3. 将 synthetic prompts 输入 LLM，抽取最后一层 hidden states。
+4. 在这些真实 LLM features 上训练 base classifier、Read Router 和 memory experts。
+5. 评估 dense memory 与 conditional memory 在不同 threshold 下的表现。
+
+推荐先用较小模型：
+
+```bat
+python run_llm_synthetic.py --model-name-or-path Qwen/Qwen2.5-0.5B-Instruct --device auto --fp16
+```
+
+如果服务器不能联网下载模型，可以先把模型下载到本地目录，然后传本地路径：
+
+```bat
+python run_llm_synthetic.py --model-name-or-path D:\models\Qwen2.5-0.5B-Instruct --device auto --fp16
+```
+
+也可以使用脚本：
+
+```bat
+scripts\run_llm_synthetic.bat Qwen/Qwen2.5-0.5B-Instruct
+```
+
+如果模型需要自定义代码，追加：
+
+```bat
+python run_llm_synthetic.py --model-name-or-path D:\models\your_model --device auto --fp16 --trust-remote-code
+```
+
+输出文件：
+
+```text
+outputs/llm_synthetic/
+├── llm_feature_base.pt
+├── llm_feature_conditional_memory.pt
+├── llm_synthetic_metrics.json
+└── llm_threshold_sweep.csv
+```
+
+重点关注：
+
+- `llm_feature_base` 的 `acc_tail_fact` 是否明显低于 common/general；
+- `llm_feature_dense_memory` 是否能补 tail facts，但可能干扰 common facts；
+- `llm_feature_conditional_threshold_*` 是否能在较低 `activation_rate` 下保持较高准确率；
+- 如果真实 LLM features 上仍能复现 toy 实验趋势，说明方法从合成 encoder 迁移到真实 LLM 表征是可行的。
+
+注意：该实验仍然使用合成 fact 数据，只是 encoder 换成真实 LLM。它是从 toy feasibility 到真实 QA 实验之间的中间验证。下一步才是接入 NQ、TriviaQA、HotpotQA 等真实数据集。
 
 ## 后续扩展方向
 
