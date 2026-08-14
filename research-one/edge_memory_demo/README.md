@@ -13,17 +13,21 @@ edge_memory_demo/
 ├── requirements.txt
 ├── run_scheduler.py
 ├── run_synthetic.py
+├── run_threshold_sweep.py
 ├── scripts/
 │   ├── run_scheduler.bat
 │   ├── run_scheduler.sh
 │   ├── run_synthetic.bat
-│   └── run_synthetic.sh
+│   ├── run_synthetic.sh
+│   ├── run_threshold_sweep.bat
+│   └── run_threshold_sweep.sh
 └── src/
     └── edge_memory/
         ├── __init__.py
         ├── data.py
         ├── model.py
         ├── scheduler.py
+        ├── threshold_sweep.py
         └── train.py
 ```
 
@@ -159,6 +163,49 @@ outputs/scheduler_run/
 
 如果 `resource_aware` 能在接近收益下减少写入数量、隐私风险和删除风险，就说明 Idea 2 有进一步实验价值。
 
+## 实验三：Read Router Threshold 消融
+
+直接运行：
+
+```bat
+python run_threshold_sweep.py --device auto
+```
+
+或使用脚本：
+
+```bat
+scripts\run_threshold_sweep.bat
+```
+
+该实验只训练一次 base 和 conditional memory，然后用不同 threshold 评估硬路由效果。默认扫描：
+
+```text
+0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90
+```
+
+也可以手动指定：
+
+```bat
+python run_threshold_sweep.py --device auto --thresholds 0.05,0.10,0.20,0.30,0.50,0.70,0.90
+```
+
+输出文件：
+
+```text
+outputs/threshold_sweep/
+├── base_model.pt
+├── conditional_memory.pt
+├── threshold_sweep.csv
+└── threshold_sweep.json
+```
+
+重点关注：
+
+- `threshold` 越低，`activation_rate` 通常越高，memory 使用更多；
+- `threshold` 越高，`activation_rate` 通常越低，但可能漏掉需要 memory 的 tail facts；
+- 如果在较宽 threshold 范围内 `accuracy` 和 `acc_tail_fact` 都稳定，说明 router 的可分性较好；
+- 如果高 threshold 下 `router_recall` 降低，说明过于保守，会漏读 memory。
+
 ## 后续扩展方向
 
 当前代码是最小可行验证，后续可以逐步替换为真实大模型实验：
@@ -168,4 +215,3 @@ outputs/scheduler_run/
 3. 将 memory expert 替换为 micro-LoRA 或 MLP Memory 形式。
 4. 将 scheduler 的合成知识项替换为真实流式 QA 或个人文档访问轨迹。
 5. 在 Windows 服务器上记录 GPU 显存、tokens/s、推理延迟和能耗代理指标。
-
