@@ -15,9 +15,14 @@ edge_memory_demo/
 ├── run_synthetic.py
 ├── run_llm_synthetic.py
 ├── run_threshold_sweep.py
+├── collect_results.py
 ├── scripts/
+│   ├── collect_results.bat
+│   ├── run_llm_capacity_sweep.bat
+│   ├── run_llm_expert_sweep.bat
 │   ├── run_llm_synthetic.bat
 │   ├── run_llm_synthetic.sh
+│   ├── run_llm_router_noise_sweep.bat
 │   ├── run_scheduler.bat
 │   ├── run_scheduler.sh
 │   ├── run_synthetic.bat
@@ -29,7 +34,9 @@ edge_memory_demo/
 └── src/
     └── edge_memory/
         ├── __init__.py
+        ├── collect_results.py
         ├── data.py
+        ├── llm_features.py
         ├── model.py
         ├── scheduler.py
         ├── threshold_sweep.py
@@ -284,6 +291,72 @@ outputs/llm_synthetic/
 - 如果真实 LLM features 上仍能复现 toy 实验趋势，说明方法从合成 encoder 迁移到真实 LLM 表征是可行的。
 
 注意：该实验仍然使用合成 fact 数据，只是 encoder 换成真实 LLM。它是从 toy feasibility 到真实 QA 实验之间的中间验证。下一步才是接入 NQ、TriviaQA、HotpotQA 等真实数据集。
+
+## 专业实验批处理脚本
+
+如果主实验已经跑通，可以继续跑以下批量消融。命令中的模型路径可以替换为 HuggingFace 名称或本地模型目录。
+
+### 容量实验：num_facts 扩展
+
+```bat
+scripts\run_llm_capacity_sweep.bat D:\models\Qwen2.5-0.5B-Instruct
+```
+
+默认测试：
+
+```text
+num_facts = 60, 100, 160, 240
+```
+
+用于观察事实数量增加后，`acc_tail_fact` 和 `activation_rate` 的变化。
+
+### 专家结构消融：num_experts 与 top_k
+
+```bat
+scripts\run_llm_expert_sweep.bat D:\models\Qwen2.5-0.5B-Instruct
+```
+
+默认测试：
+
+```text
+(num_experts=4, top_k=1)
+(num_experts=8, top_k=1)
+(num_experts=8, top_k=2)
+(num_experts=16, top_k=2)
+(num_experts=16, top_k=4)
+```
+
+用于观察专家数量和每次激活专家数对准确率与开销的影响。
+
+### Router 噪声鲁棒性
+
+```bat
+scripts\run_llm_router_noise_sweep.bat D:\models\Qwen2.5-0.5B-Instruct
+```
+
+默认测试：
+
+```text
+router_label_noise = 0.0, 0.1, 0.2, 0.3
+```
+
+用于模拟真实场景中 router teacher 不完美的情况。
+
+### 汇总结果
+
+所有 LLM synthetic 实验跑完后，可以合并为一个 CSV：
+
+```bat
+scripts\collect_results.bat
+```
+
+输出：
+
+```text
+outputs\summary\llm_results_summary.csv
+```
+
+该 CSV 可直接用于画图或整理表格。
 
 ## 后续扩展方向
 
