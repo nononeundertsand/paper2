@@ -20,6 +20,8 @@ edge_memory_demo/
 │   ├── run_synthetic.bat
 │   ├── run_synthetic.sh
 │   ├── run_threshold_sweep.bat
+│   ├── run_threshold_sweep_hard.bat
+│   ├── run_threshold_sweep_hard.sh
 │   └── run_threshold_sweep.sh
 └── src/
     └── edge_memory/
@@ -188,6 +190,25 @@ scripts\run_threshold_sweep.bat
 ```bat
 python run_threshold_sweep.py --device auto --thresholds 0.05,0.10,0.20,0.30,0.50,0.70,0.90
 ```
+
+如果默认任务过于干净，可能所有 threshold 得到相同结果。这表示 router 已经把需要 memory 的样本和不需要 memory 的样本完全分开。为了观察更真实的 trade-off，可以运行 harder ablation：
+
+```bat
+scripts\run_threshold_sweep_hard.bat
+```
+
+或手动运行：
+
+```bat
+python run_threshold_sweep.py --device auto ^
+  --output-dir outputs\threshold_sweep_hard ^
+  --thresholds 0.05,0.10,0.20,0.30,0.40,0.50,0.60,0.70,0.80,0.90,0.95 ^
+  --router-label-noise 0.15 ^
+  --router-loss-weight 0.25 ^
+  --sparsity-weight 0.08
+```
+
+其中 `--router-label-noise` 只扰动训练阶段的 router 监督标签，评估标签仍然保持干净，用来模拟真实场景中 teacher 或路由监督不完美的情况。
 
 输出文件：
 

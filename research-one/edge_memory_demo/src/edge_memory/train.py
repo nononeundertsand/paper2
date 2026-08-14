@@ -46,6 +46,7 @@ class TrainConfig:
     router_loss_weight: float = 0.6
     sparsity_weight: float = 0.03
     load_balance_weight: float = 0.01
+    router_label_noise: float = 0.0
     threshold: float = 0.5
     device: str = "auto"
 
@@ -140,7 +141,11 @@ def train_memory(
                 soft_read=True,
             )
             task_loss = F.cross_entropy(out["final_logits"], batch["labels"])
-            router_loss = F.binary_cross_entropy_with_logits(out["read_logit"], batch["read_labels"])
+            read_labels = batch["read_labels"]
+            if cfg.router_label_noise > 0.0:
+                flip_mask = torch.rand_like(read_labels) < cfg.router_label_noise
+                read_labels = torch.where(flip_mask, 1.0 - read_labels, read_labels)
+            router_loss = F.binary_cross_entropy_with_logits(out["read_logit"], read_labels)
             sparsity_loss = out["read_prob"].mean()
             balance_loss = load_balance_loss(out["expert_scores"])
             loss = (
@@ -373,6 +378,7 @@ def parse_args(argv: Iterable[str]) -> TrainConfig:
     parser.add_argument("--router-loss-weight", type=float, default=TrainConfig.router_loss_weight)
     parser.add_argument("--sparsity-weight", type=float, default=TrainConfig.sparsity_weight)
     parser.add_argument("--load-balance-weight", type=float, default=TrainConfig.load_balance_weight)
+    parser.add_argument("--router-label-noise", type=float, default=TrainConfig.router_label_noise)
     parser.add_argument("--threshold", type=float, default=TrainConfig.threshold)
     parser.add_argument("--device", default=TrainConfig.device)
     args = parser.parse_args(list(argv))
@@ -394,6 +400,7 @@ def parse_args(argv: Iterable[str]) -> TrainConfig:
         router_loss_weight=args.router_loss_weight,
         sparsity_weight=args.sparsity_weight,
         load_balance_weight=args.load_balance_weight,
+        router_label_noise=args.router_label_noise,
         threshold=args.threshold,
         device=args.device,
     )
