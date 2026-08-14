@@ -47,6 +47,13 @@ class RealQAConfig:
     local_jsonl: Optional[str] = None
     question_field: str = "question"
     answer_field: str = "answers"
+    general_source: str = "hf"
+    general_dataset_name: str = "ag_news"
+    general_dataset_config: Optional[str] = None
+    general_dataset_split: str = "train"
+    general_local_jsonl: Optional[str] = None
+    general_text_field: str = "text"
+    general_label_field: str = "label"
     num_facts: int = 120
     common_fact_ratio: float = 0.6
     base_train_size: int = 4000
@@ -80,6 +87,12 @@ class QAFact:
     is_common: bool
 
 
+@dataclass(frozen=True)
+class GeneralExample:
+    text: str
+    label_name: str
+
+
 class RawTextDataset:
     def __init__(self, samples: List[dict]) -> None:
         self.samples = samples
@@ -92,11 +105,16 @@ class RawTextDataset:
 
 
 class RealQAWorld:
-    def __init__(self, facts: List[QAFact]) -> None:
+    def __init__(self, facts: List[QAFact], general_examples: List[GeneralExample]) -> None:
         self.facts = facts
         self.common_facts = [fact for fact in facts if fact.is_common]
         self.tail_facts = [fact for fact in facts if not fact.is_common]
-        self.labels = [fact.answer for fact in facts] + [label for _, label in GENERAL_TASKS]
+        self.general_examples = general_examples
+        self.general_label_names = sorted({example.label_name for example in general_examples})
+        self.general_label_to_offset = {
+            label_name: offset for offset, label_name in enumerate(self.general_label_names)
+        }
+        self.labels = [fact.answer for fact in facts] + self.general_label_names
         self.num_fact_labels = len(facts)
         self.num_labels = len(self.labels)
 
@@ -111,15 +129,13 @@ class RealQAWorld:
         return rng.choice(templates).format(question=fact.question.strip())
 
     def render_general_prompt(self, rng: random.Random) -> Tuple[str, int]:
-        text, _ = rng.choice(GENERAL_TASKS)
-        variants = [
-            text,
-            f"please {text}",
-            f"task {text}",
-            f"{text} now",
-        ]
-        label = self.num_fact_labels + [item[0] for item in GENERAL_TASKS].index(text)
-        return rng.choice(variants), label
+        example = rng.choice(self.general_examples)
+        label = self.num_fact_labels + self.general_label_to_offset[example.label_name]
+        return example.text, label
+
+    @property
+    def has_general_examples(self) -> bool:
+        return bool(self.general_examples)
 
 
 def normalize_answer(answer: str) -> str:
@@ -183,6 +199,88 @@ def load_hf_dataset(cfg: RealQAConfig) -> List[Tuple[str, str]]:
     return pairs
 
 
+def load_hf_general_examples(cfg: RealQAConfig) -> List[GeneralExample]:
+    try:
+        from datasets import load_dataset
+    except ImportError as exc:
+        raise RuntimeError(
+            "datasets is required for HuggingFace general datasets. Install it with: pip install datasets"
+        ) from exc
+
+    if cfg.general_dataset_config:
+        dataset = load_dataset(cfg.general_dataset_name, cfg.general_dataset_config, split=cfg.general_dataset_split)
+    else:
+        dataset = load_dataset(cfg.general_dataset_name, split=cfg.general_dataset_split)
+
+    examples: List[GeneralExample] = []
+    for obj in dataset:
+        if len(examples) >= cfg.max_source_examples:
+            break
+        text = normalize_answer(obj.get(cfg.general_text_field, ""))
+        raw_label = obj.get(cfg.general_label_field)
+        if text == "" or raw_label is None:
+            continue
+        label_name = f"general_{cfg.general_dataset_name}_{raw_label}"
+        examples.append(GeneralExample(text=text, label_name=label_name))
+    return examples
+
+
+def load_local_general_jsonl(
+    path: Path,
+    text_field: str,
+    label_field: str,
+    limit: int,
+) -> List[GeneralExample]:
+    examples: List[GeneralExample] = []
+    with path.open("r", encoding="utf-8") as f:
+        for line in f:
+            if len(examples) >= limit:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            text = normalize_answer(obj.get(text_field, ""))
+            raw_label = obj.get(label_field)
+            if text == "" or raw_label is None:
+                continue
+            examples.append(GeneralExample(text=text, label_name=f"general_local_{raw_label}"))
+    return examples
+
+
+def build_synthetic_general_examples() -> List[GeneralExample]:
+    examples: List[GeneralExample] = []
+    for text, label in GENERAL_TASKS:
+        variants = [
+            text,
+            f"please {text}",
+            f"task {text}",
+            f"{text} now",
+        ]
+        for variant in variants:
+            examples.append(GeneralExample(text=variant, label_name=label))
+    return examples
+
+
+def build_general_examples(cfg: RealQAConfig) -> List[GeneralExample]:
+    if cfg.general_source == "none":
+        return []
+    if cfg.general_source == "synthetic":
+        return build_synthetic_general_examples()
+    if cfg.general_source == "hf":
+        return load_hf_general_examples(cfg)
+    if cfg.general_source == "jsonl":
+        if not cfg.general_local_jsonl:
+            raise ValueError("--general-local-jsonl is required when --general-source jsonl")
+        return load_local_general_jsonl(
+            Path(cfg.general_local_jsonl),
+            cfg.general_text_field,
+            cfg.general_label_field,
+            cfg.max_source_examples,
+        )
+    raise ValueError(f"Unknown general_source: {cfg.general_source}")
+
+
 def deduplicate_pairs(pairs: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
     seen = set()
     out: List[Tuple[str, str]] = []
@@ -213,32 +311,38 @@ def build_world(cfg: RealQAConfig) -> RealQAWorld:
         QAFact(fact_id=idx, question=question, answer=answer, is_common=idx < common_cutoff)
         for idx, (question, answer) in enumerate(selected)
     ]
-    return RealQAWorld(facts)
+    general_examples = build_general_examples(cfg)
+    if cfg.general_source != "none" and not general_examples:
+        raise ValueError(f"No general examples loaded from source: {cfg.general_source}")
+    return RealQAWorld(facts, general_examples)
+
+
+def sample_kind(split: str, rng: random.Random, has_general: bool) -> int:
+    p = rng.random()
+    if split == "base_train":
+        if has_general and p < 0.35:
+            return SAMPLE_GENERAL
+        return SAMPLE_COMMON_FACT
+    if split == "memory_train":
+        if p < 0.45:
+            return SAMPLE_TAIL_FACT
+        if p < 0.70 or not has_general:
+            return SAMPLE_COMMON_FACT
+        return SAMPLE_GENERAL
+    if split == "test":
+        if p < 0.34:
+            return SAMPLE_TAIL_FACT
+        if p < 0.67 or not has_general:
+            return SAMPLE_COMMON_FACT
+        return SAMPLE_GENERAL
+    raise ValueError(f"Unknown split: {split}")
 
 
 def build_samples(world: RealQAWorld, split: str, size: int, seed: int) -> RawTextDataset:
     rng = random.Random(seed)
     samples: List[dict] = []
     for _ in range(size):
-        p = rng.random()
-        if split == "base_train":
-            kind = SAMPLE_GENERAL if p < 0.35 else SAMPLE_COMMON_FACT
-        elif split == "memory_train":
-            if p < 0.45:
-                kind = SAMPLE_TAIL_FACT
-            elif p < 0.70:
-                kind = SAMPLE_COMMON_FACT
-            else:
-                kind = SAMPLE_GENERAL
-        elif split == "test":
-            if p < 0.34:
-                kind = SAMPLE_TAIL_FACT
-            elif p < 0.67:
-                kind = SAMPLE_COMMON_FACT
-            else:
-                kind = SAMPLE_GENERAL
-        else:
-            raise ValueError(f"Unknown split: {split}")
+        kind = sample_kind(split, rng, world.has_general_examples)
 
         if kind == SAMPLE_TAIL_FACT:
             fact = rng.choice(world.tail_facts)
@@ -278,6 +382,11 @@ def run(cfg: RealQAConfig) -> Dict[str, object]:
     world = build_world(cfg)
     print(
         f"Loaded facts: total={len(world.facts)}, common={len(world.common_facts)}, tail={len(world.tail_facts)}",
+        flush=True,
+    )
+    print(
+        f"Loaded general examples: total={len(world.general_examples)}, labels={len(world.general_label_names)}, "
+        f"source={cfg.general_source}",
         flush=True,
     )
 
@@ -340,6 +449,10 @@ def run(cfg: RealQAConfig) -> Dict[str, object]:
         {"fact_id": fact.fact_id, "question": fact.question, "answer": fact.answer, "is_common": fact.is_common}
         for fact in world.facts[: min(20, len(world.facts))]
     ]
+    general_preview = [
+        {"text": example.text, "label_name": example.label_name}
+        for example in world.general_examples[: min(20, len(world.general_examples))]
+    ]
     payload = {
         "config": asdict(cfg),
         "hidden_size": hidden_size,
@@ -347,10 +460,13 @@ def run(cfg: RealQAConfig) -> Dict[str, object]:
         "num_facts": len(world.facts),
         "num_common_facts": len(world.common_facts),
         "num_tail_facts": len(world.tail_facts),
+        "num_general_examples": len(world.general_examples),
+        "num_general_labels": len(world.general_label_names),
         "base_metrics": base_metrics,
         "dense_metrics": dense_metrics,
         "threshold_metrics": threshold_metrics,
         "fact_preview": fact_preview,
+        "general_preview": general_preview,
     }
     with (output_dir / "real_qa_metrics.json").open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -371,6 +487,13 @@ def parse_args(argv: Iterable[str]) -> RealQAConfig:
     parser.add_argument("--local-jsonl", default=RealQAConfig.local_jsonl)
     parser.add_argument("--question-field", default=RealQAConfig.question_field)
     parser.add_argument("--answer-field", default=RealQAConfig.answer_field)
+    parser.add_argument("--general-source", choices=["hf", "jsonl", "synthetic", "none"], default=RealQAConfig.general_source)
+    parser.add_argument("--general-dataset-name", default=RealQAConfig.general_dataset_name)
+    parser.add_argument("--general-dataset-config", default=RealQAConfig.general_dataset_config)
+    parser.add_argument("--general-dataset-split", default=RealQAConfig.general_dataset_split)
+    parser.add_argument("--general-local-jsonl", default=RealQAConfig.general_local_jsonl)
+    parser.add_argument("--general-text-field", default=RealQAConfig.general_text_field)
+    parser.add_argument("--general-label-field", default=RealQAConfig.general_label_field)
     parser.add_argument("--num-facts", type=int, default=RealQAConfig.num_facts)
     parser.add_argument("--common-fact-ratio", type=float, default=RealQAConfig.common_fact_ratio)
     parser.add_argument("--base-train-size", type=int, default=RealQAConfig.base_train_size)
@@ -405,6 +528,13 @@ def parse_args(argv: Iterable[str]) -> RealQAConfig:
         local_jsonl=args.local_jsonl,
         question_field=args.question_field,
         answer_field=args.answer_field,
+        general_source=args.general_source,
+        general_dataset_name=args.general_dataset_name,
+        general_dataset_config=args.general_dataset_config,
+        general_dataset_split=args.general_dataset_split,
+        general_local_jsonl=args.general_local_jsonl,
+        general_text_field=args.general_text_field,
+        general_label_field=args.general_label_field,
         num_facts=args.num_facts,
         common_fact_ratio=args.common_fact_ratio,
         base_train_size=args.base_train_size,
@@ -438,4 +568,3 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
 
 if __name__ == "__main__":
     main()
-

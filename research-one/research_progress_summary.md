@@ -261,7 +261,7 @@ Input: candidate knowledge items
 尽管当前结果比较有说服力，但仍有几个限制：
 
 1. **真实 QA 实验刚开始接入**  
-   当前已有真实 Qwen hidden state 上的 synthetic fact 结果，并已经补充了真实 QA 数据入口。下一步需要在 SQuAD、Natural Questions、TriviaQA、HotpotQA 等数据集上系统验证。
+   当前已有真实 Qwen hidden state 上的 synthetic fact 结果，并已经补充了真实 QA 数据入口。最新实现支持 SQuAD 或本地 QA JSONL 作为 common/tail 数据，同时支持 AG News 或本地分类 JSONL 作为真实 general 数据。下一步需要在 Natural Questions、TriviaQA、HotpotQA 等更复杂数据集上系统验证。
 
 2. **还没有多随机种子**  
    当前实验主要是单 seed，需要补充 3-5 个 seed，验证结果稳定性。
@@ -293,10 +293,12 @@ Input: candidate knowledge items
 
 ### 10.2 真实 QA 场景下的按需读取
 
-将 synthetic facts 替换为真实 QA 数据。当前代码已经支持两种输入：
+将 synthetic facts 替换为真实 QA 数据。当前代码已经支持：
 
-- HuggingFace 数据集，例如 SQuAD；
-- 本地 JSONL QA 文件。
+- HuggingFace QA 数据集，例如 SQuAD；
+- 本地 JSONL QA 文件；
+- HuggingFace general 数据集，例如 AG News；
+- 本地 JSONL general 分类文件。
 
 优先顺序建议为：
 
@@ -313,7 +315,7 @@ Dense Memory 过度干扰
 Conditional Memory 低激活率补充知识
 ```
 
-需要注意，当前真实 QA 实现仍是分类式验证，即将真实问题映射到答案标签。它比 synthetic facts 更真实，但还不是最终生成式 QA。后续可以进一步将 memory 输出接入候选答案排序或 LLM token 生成。
+需要注意，当前真实 QA 实现虽然使用真实问题、真实答案和真实 general 文本，但仍是分类式验证，即将真实问题映射到答案标签。它比 synthetic facts 更真实，但还不是最终生成式 QA。后续可以进一步将 memory 输出接入候选答案排序或 LLM token 生成。
 
 ### 10.3 资源感知写入闭环
 

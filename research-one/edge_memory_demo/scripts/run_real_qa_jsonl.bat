@@ -15,6 +15,11 @@ python run_real_qa.py ^
   --output-dir outputs\real_qa_jsonl ^
   --question-field question ^
   --answer-field answers ^
+  --general-source hf ^
+  --general-dataset-name ag_news ^
+  --general-dataset-split train ^
+  --general-text-field text ^
+  --general-label-field label ^
   --device auto ^
   --fp16 ^
   --num-facts 120 ^

@@ -298,11 +298,11 @@ outputs/llm_synthetic/
 
 ## 实验五：真实 QA 数据验证
 
-该实验使用真实 QA 数据集的问题和答案，而不是 synthetic `entity_x -> answer_x`。当前实现仍然是分类式验证：将真实问题文本输入冻结 LLM，抽取 hidden state，再训练 base head、memory experts 和 router 去预测答案标签。它用于验证“真实问题文本分布上是否仍存在 Base 缺 tail、Dense Memory 干扰、Conditional Memory 按需补充”的模式。
+该实验使用真实 QA 数据集的问题和答案，而不是 synthetic `entity_x -> answer_x`。正式配置下，`common_fact/tail_fact` 来自真实 QA 数据，`general` 来自真实分类数据集，默认使用 `ag_news`。当前实现仍然是分类式验证：将真实文本输入冻结 LLM，抽取 hidden state，再训练 base head、memory experts 和 router 去预测标签。它用于验证“真实文本分布上是否仍存在 Base 缺 tail、Dense Memory 干扰、Conditional Memory 按需补充”的模式。
 
 ### 使用 HuggingFace SQuAD
 
-SQuAD 比 NQ/TriviaQA 更容易下载，建议先用它调通真实数据流程：
+SQuAD 比 NQ/TriviaQA 更容易下载，建议先用它调通真实 QA 流程。该脚本默认同时下载 `ag_news` 作为真实 general 数据：
 
 ```bat
 scripts\run_real_qa_squad.bat D:\models\Qwen2.5-0.5B-Instruct
@@ -315,6 +315,11 @@ python run_real_qa.py ^
   --model-name-or-path D:\models\Qwen2.5-0.5B-Instruct ^
   --dataset-name squad ^
   --dataset-split train ^
+  --general-source hf ^
+  --general-dataset-name ag_news ^
+  --general-dataset-split train ^
+  --general-text-field text ^
+  --general-label-field label ^
   --output-dir outputs\real_qa_squad ^
   --device auto ^
   --fp16 ^
@@ -329,7 +334,7 @@ python run_real_qa.py ^
 
 ### 使用本地 JSONL
 
-如果服务器无法下载 HuggingFace 数据集，可以准备一个 JSONL 文件，每行包含一个 QA 样本：
+如果服务器无法下载 HuggingFace QA 数据集，可以准备一个 JSONL 文件，每行包含一个 QA 样本：
 
 ```json
 {"question": "Who wrote Hamlet?", "answers": ["William Shakespeare"]}
@@ -350,7 +355,31 @@ python run_real_qa.py ^
   --local-jsonl D:\data\qa.jsonl ^
   --question-field query ^
   --answer-field answer ^
+  --general-source hf ^
+  --general-dataset-name ag_news ^
   --output-dir outputs\real_qa_jsonl ^
+  --device auto ^
+  --fp16
+```
+
+如果 general 数据也要使用本地真实数据，可以额外准备一个分类 JSONL：
+
+```json
+{"text": "Stocks rose after the central bank decision.", "label": "business"}
+{"text": "The team won the final match.", "label": "sports"}
+```
+
+然后运行：
+
+```bat
+python run_real_qa.py ^
+  --model-name-or-path D:\models\Qwen2.5-0.5B-Instruct ^
+  --local-jsonl D:\data\qa.jsonl ^
+  --general-source jsonl ^
+  --general-local-jsonl D:\data\general.jsonl ^
+  --general-text-field text ^
+  --general-label-field label ^
+  --output-dir outputs\real_qa_jsonl_all_real ^
   --device auto ^
   --fp16
 ```
@@ -369,10 +398,10 @@ outputs\real_qa_squad\
 
 - `real_qa_base` 的 `acc_tail_fact` 是否低于 common/general；
 - `real_qa_dense_memory` 是否补 tail 但破坏 common/general；
-- `real_qa_conditional_threshold_*` 是否在较低激活率下同时保持 common 和 tail；
+- `real_qa_conditional_threshold_*` 是否在较低激活率下同时保持 common、tail 和真实 general；
 - 如果真实 QA 结果不如 synthetic，优先降低 `num_facts` 或增加训练样本/epoch。
 
-注意：这一步已经使用真实 QA 文本和真实答案，但仍然是分类式验证，不是最终的生成式 QA。生成式 QA 需要进一步让 memory 输出影响 LLM 生成 token 或候选答案排序。
+注意：这一步已经使用真实 QA 文本、真实答案和真实 general 文本，但仍然是分类式验证，不是最终的生成式 QA。生成式 QA 需要进一步让 memory 输出影响 LLM 生成 token 或候选答案排序。
 
 ## 专业实验批处理脚本
 
