@@ -17,8 +17,12 @@ edge_memory_demo/
 ├── run_real_qa.py
 ├── run_threshold_sweep.py
 ├── collect_results.py
+├── aggregate_results.py
 ├── scripts/
 │   ├── collect_results.bat
+│   ├── run_e2e_full.bat
+│   ├── run_e2e_main.bat
+│   ├── run_e2e_smoke.bat
 │   ├── run_llm_capacity_sweep.bat
 │   ├── run_llm_expert_sweep.bat
 │   ├── run_llm_synthetic.bat
@@ -37,6 +41,7 @@ edge_memory_demo/
 └── src/
     └── edge_memory/
         ├── __init__.py
+        ├── aggregate_results.py
         ├── collect_results.py
         ├── data.py
         ├── llm_features.py
@@ -80,6 +85,45 @@ pip install --no-index --find-links wheels -r requirements.txt
 ```
 
 如果只跑 toy synthetic 实验，理论上只需要 `torch`；如果跑真实 LLM hidden-state 实验，需要额外安装 `transformers`；如果跑 HuggingFace 真实 QA 数据集，需要 `datasets`。当前 `requirements.txt` 已包含这些依赖。
+
+## 端到端一键实验
+
+推荐先用 smoke 检查环境：
+
+```bat
+scripts\run_e2e_smoke.bat D:\models\Qwen2.5-0.5B-Instruct
+```
+
+Smoke 成功后运行主实验，包含 3 个随机种子和写入策略汇总：
+
+```bat
+scripts\run_e2e_main.bat D:\models\Qwen2.5-0.5B-Instruct
+```
+
+如果需要完整实验包，运行：
+
+```bat
+scripts\run_e2e_full.bat D:\models\Qwen2.5-0.5B-Instruct
+```
+
+Full 包含：
+
+- Real QA main experiment with 3 seeds
+- Capacity sweep
+- Expert/top-k sweep
+- Router noise sweep
+- Resource-aware write scheduler
+- Result collection
+- Mean/std aggregation
+
+主要输出：
+
+```text
+outputs\e2e\summary\e2e_main_summary.csv
+outputs\e2e\summary\e2e_main_aggregate.csv
+outputs\e2e\summary\e2e_full_summary.csv
+outputs\e2e\summary\e2e_full_aggregate.csv
+```
 
 ## 实验一：按需读取参数记忆
 

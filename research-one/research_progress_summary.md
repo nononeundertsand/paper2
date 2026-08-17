@@ -166,7 +166,40 @@ Input: candidate knowledge items
 
 这说明按需读取机制在真实 LLM 表征上是有效的。
 
-### 6.3 资源感知写入仿真
+### 6.3 全真实数据候选答案排序实验
+
+进一步地，我们将实验从 synthetic facts 扩展到真实数据：
+
+- `common_fact / tail_fact`：来自真实 SQuAD 问答样本；
+- `general`：来自真实 AG News 文本分类样本；
+- 表征模型：冻结的 `Qwen2.5-0.5B-Instruct` hidden state；
+- 评估方式：除分类准确率外，额外对真实 QA 样本进行候选答案排序，并报告 EM、F1、MRR、Hits@K。
+
+主实验结果如下：
+
+| 方法 | Accuracy | Common Acc | Tail Acc | General Acc | Activation Rate | QA EM | QA F1 | QA MRR | Hits@5 |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| Base | 0.6075 | 1.0000 | 0.0000 | 0.8706 | 0.0000 | 0.4897 | 0.4915 | 0.4952 | 0.4897 |
+| Dense Memory | 0.4425 | 0.0936 | 0.9905 | 0.1995 | 1.0000 | 0.5513 | 0.5513 | 0.5866 | 0.6140 |
+| Conditional Memory | 0.9525 | 0.9901 | 0.9905 | 0.8679 | 0.3567 | 0.9903 | 0.9903 | 0.9938 | 1.0000 |
+
+分类型候选答案排序结果：
+
+| 方法 | Common EM | Tail EM |
+|---|---:|---:|
+| Base | 1.0000 | 0.0000 |
+| Dense Memory | 0.0936 | 0.9905 |
+| Conditional Memory | 0.9901 | 0.9905 |
+
+结论：
+
+- Base 在 common QA 和 AG News general 上表现较好，但对 tail QA 完全失败，`rank_tail_em=0.0000`；
+- Dense Memory 能将 tail QA 提升到 `rank_tail_em=0.9905`，但 common QA 和 general 几乎崩溃，说明始终激活 memory 会产生严重负迁移；
+- Conditional Memory 只激活约 `35.67%` 的 memory，就能同时保持 common QA、tail QA 和真实 general，达到 `rank_qa_em=0.9903`、`rank_qa_f1=0.9903`、`rank_qa_mrr=0.9938`、`Hits@5=1.0000`。
+
+这说明，在真实 QA 文本、真实答案和真实 general 文本上，按需读取参数记忆不仅能提高分类准确率，也能在候选答案排序 EM/F1 上显著优于 Base 和 Dense Memory。
+
+### 6.4 资源感知写入仿真
 
 写入策略仿真中，对比三种策略：
 
@@ -239,13 +272,13 @@ Input: candidate knowledge items
 基于当前实验，可以得出以下阶段性结论：
 
 1. **长尾知识缺口真实存在**  
-   Base head 对 common/general 表现较好，但 tail facts 准确率为 0，说明需要外部记忆补充。
+   在 SQuAD + AG News 的真实数据实验中，Base 对 common QA 和 general 分类表现较好，但 tail QA 的候选答案排序 EM 为 0，说明需要外部记忆补充。
 
 2. **始终激活参数记忆不是好方案**  
-   Dense Memory 能补 tail facts，但会严重破坏基础模型已有能力，说明 memory 需要被选择性调用。
+   Dense Memory 能显著补充 tail QA，但会严重破坏 common QA 和 general 分类，说明 memory 需要被选择性调用。
 
 3. **按需读取机制有效**  
-   Conditional Memory 通过 Read Router 只在需要时激活 memory，以约 34%-36% 的激活率显著提升 tail facts，并保持 common/general。
+   Conditional Memory 通过 Read Router 只在需要时激活 memory，以约 34%-36% 的激活率显著提升 tail QA，并保持 common QA 和真实 general。当前真实数据实验中，Conditional Memory 达到 `rank_qa_em=0.9903`、`rank_qa_f1=0.9903`、`rank_qa_mrr=0.9938`。
 
 4. **Memory capacity 是后续关键问题**  
    当事实数量增大时，固定规模 memory experts 性能下降，说明后续需要研究可扩展 memory bank、动态增加 experts 或资源感知写入。
@@ -260,8 +293,8 @@ Input: candidate knowledge items
 
 尽管当前结果比较有说服力，但仍有几个限制：
 
-1. **真实 QA 实验刚开始接入**  
-   当前已有真实 Qwen hidden state 上的 synthetic fact 结果，并已经补充了真实 QA 数据入口。最新实现支持 SQuAD 或本地 QA JSONL 作为 common/tail 数据，同时支持 AG News 或本地分类 JSONL 作为真实 general 数据。下一步需要在 Natural Questions、TriviaQA、HotpotQA 等更复杂数据集上系统验证。
+1. **真实 QA 实验仍处于候选答案排序阶段**  
+   当前已经支持 SQuAD 或本地 QA JSONL 作为 common/tail 数据，同时支持 AG News 或本地分类 JSONL 作为真实 general 数据，并加入了候选答案排序 EM/F1。但这仍然不是自由生成式 QA，下一步需要让 memory 输出参与 LLM token 解码或候选答案重排序，并在 Natural Questions、TriviaQA、HotpotQA 等更复杂数据集上系统验证。
 
 2. **还没有多随机种子**  
    当前实验主要是单 seed，需要补充 3-5 个 seed，验证结果稳定性。
@@ -315,7 +348,7 @@ Dense Memory 过度干扰
 Conditional Memory 低激活率补充知识
 ```
 
-需要注意，当前真实 QA 实现虽然使用真实问题、真实答案和真实 general 文本，但仍是分类式验证，即将真实问题映射到答案标签。它比 synthetic facts 更真实，但还不是最终生成式 QA。后续可以进一步将 memory 输出接入候选答案排序或 LLM token 生成。
+需要注意，当前真实 QA 实现虽然使用真实问题、真实答案和真实 general 文本，并已经加入候选答案排序 EM/F1，但还不是最终自由生成式 QA。后续可以进一步将 memory 输出接入候选答案重排序或 LLM token 生成。
 
 ### 10.3 资源感知写入闭环
 
@@ -352,3 +385,4 @@ Conditional Memory 低激活率补充知识
 在组会中可以这样概括当前阶段：
 
 > 我们围绕“边缘大模型是否应该一直读取参数记忆”这一问题，设计了按需读取的参数记忆机制。实验表明，在冻结 Qwen2.5-0.5B hidden state 上，Base 对 tail facts 准确率为 0，Dense Memory 虽能补充 tail facts 但严重破坏 common/general；而 Conditional Memory 通过 router 按需激活，在约 34%-36% 的 memory 激活率下显著提升 tail facts，并保持 common/general。进一步容量实验说明固定 memory bank 存在容量瓶颈，专家结构消融说明 memory expert 数量和 Top-K 存在准确率/开销权衡，router 噪声实验说明方法对不完美监督具有初步鲁棒性。下一步将接入真实 QA 数据，并将资源感知写入从仿真扩展为完整闭环。
+> 我们围绕“边缘大模型是否应该一直读取参数记忆”这一问题，设计了按需读取的参数记忆机制。最新实验使用 SQuAD 构造真实 common/tail QA，并使用 AG News 作为真实 general 任务。在冻结 Qwen2.5-0.5B hidden state 上，Base 对 tail QA 的候选答案排序 EM 为 0；Dense Memory 虽将 tail EM 提升到 99.05%，但 common EM 降至 9.36%、general accuracy 降至 19.95%；Conditional Memory 在仅 35.67% 的 memory 激活率下达到 QA EM 99.03%、QA F1 99.03%、MRR 99.38%、Hits@5 100%，同时保持 common EM 99.01%、tail EM 99.05% 和 general accuracy 86.79%。这说明按需读取参数记忆在真实数据上能够补充长尾知识并避免负迁移。下一步将扩展到更难的开放域 QA 和生成式 QA。
